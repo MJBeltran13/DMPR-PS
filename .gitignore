@@ -1,4 +1,50 @@
-.vscode
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Environment variables
+.env
+
+# Images
+# Ignore all images in the images directory
+images/*
+
+# Track specific image types
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+*.mat
+*.json
+
 .pylintrc
-__pycache__
 weights/*

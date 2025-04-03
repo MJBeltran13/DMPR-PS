@@ -180,7 +180,7 @@ def inference_detector(args):
     torch.set_grad_enabled(False)
     dp_detector = DirectionalPointDetector(
         3, args.depth_factor, config.NUM_FEATURE_MAP_CHANNEL).to(device)
-    dp_detector.load_state_dict(torch.load(args.detector_weights))
+    dp_detector.load_state_dict(torch.load(args.detector_weights, map_location=device))
     dp_detector.eval()
     if args.mode == "image":
         detect_image(dp_detector, device, args)
