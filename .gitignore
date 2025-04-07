@@ -48,3 +48,4 @@ images/*
 
 .pylintrc
 weights/*
+dmpr_pretrained_weights.pth

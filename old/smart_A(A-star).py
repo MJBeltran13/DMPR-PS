@@ -55,11 +55,14 @@ def get_slot_info(image, marking_points, slot):
     p1_x = int(round(width * point_b.x - 0.5))
     p1_y = int(round(height * point_b.y - 0.5))
     
-    # Calculate angle in degrees
-    angle = math.degrees(math.atan2(p1_y - p0_y, p1_x - p0_x))
-    if angle < 0:
-        angle += 360
-        
+    # Calculate angle in radians (this will be used for path planning)
+    angle_rad = math.atan2(p1_y - p0_y, p1_x - p0_x)
+    # Normalize angle to [-π, π]
+    while angle_rad > math.pi:
+        angle_rad -= 2 * math.pi
+    while angle_rad < -math.pi:
+        angle_rad += 2 * math.pi
+    
     # Calculate center point
     center_x = (p0_x + p1_x) / 2
     center_y = (p0_y + p1_y) / 2
@@ -67,22 +70,76 @@ def get_slot_info(image, marking_points, slot):
     return {
         'slot_id': len(slot),
         'center': (center_x, center_y),
-        'angle': angle,
+        'angle': angle_rad,  # Store angle in radians
         'point1': (p0_x, p0_y),
         'point2': (p1_x, p1_y),
         'confidence': (point_a.shape, point_b.shape)
     }
 
-def draw_car(image, position, angle, car_params):
+def draw_car(image, position, angle, car_params, is_target=False):
     """Draw a single red box representing the car at the given position."""
     x, y = position  # Unpack only x and y
     length = car_params.length
     width = car_params.width
     
-    # Draw the car as a rectangle
+    # Calculate corners of the rectangle
     top_left = (int(x - length / 2), int(y - width / 2))
     bottom_right = (int(x + length / 2), int(y + width / 2))
-    cv.rectangle(image, top_left, bottom_right, (0, 0, 255), -1)  # Red box
+    
+    if is_target:
+        # Draw target position as a blue bounding box with dashed lines
+        cv.rectangle(image, top_left, bottom_right, (255, 0, 0), 2)  # Blue box outline
+        # Add direction indicator for target position
+        center = (int(x), int(y))
+        direction_end = (
+            int(x + length/2 * math.cos(angle)),
+            int(y + length/2 * math.sin(angle))
+        )
+        cv.arrowedLine(image, center, direction_end, (255, 0, 0), 2)
+    else:
+        # Draw current car position as filled red rectangle
+        cv.rectangle(image, top_left, bottom_right, (0, 0, 255), -1)  # Red box
+
+def draw_target_position(image, target_pos, target_angle, car_params):
+    """Draw the target parking position with a bounding box."""
+    # Draw the target position bounding box
+    draw_car(image, target_pos, target_angle, car_params, is_target=True)
+    
+    # Calculate the center of the bounding box
+    x, y = target_pos
+    length = car_params.length
+    width = car_params.width
+    
+    # Calculate the corners of the rotated bounding box
+    cos_angle = math.cos(target_angle)
+    sin_angle = math.sin(target_angle)
+    
+    # Calculate the four corners of the rotated rectangle
+    half_length = length / 2
+    half_width = width / 2
+    
+    # Calculate center point (average of corners)
+    corners = [
+        (x + half_length * cos_angle - half_width * sin_angle,
+         y + half_length * sin_angle + half_width * cos_angle),
+        (x + half_length * cos_angle + half_width * sin_angle,
+         y + half_length * sin_angle - half_width * cos_angle),
+        (x - half_length * cos_angle + half_width * sin_angle,
+         y - half_length * sin_angle - half_width * cos_angle),
+        (x - half_length * cos_angle - half_width * sin_angle,
+         y - half_length * sin_angle + half_width * cos_angle)
+    ]
+    
+    # Calculate the true center (average of all corners)
+    center_x = int(sum(corner[0] for corner in corners) / 4)
+    center_y = int(sum(corner[1] for corner in corners) / 4)
+    
+    # Draw a green dot at the center of the bounding box
+    cv.circle(image, (center_x, center_y), 5, (0, 255, 0), -1)  # Green circle for center
+    
+    # Add a small text label to indicate this is the target center
+    cv.putText(image, "Target", (center_x + 10, center_y + 10),
+              cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
 def calculate_arc_points(center, radius, start_angle, end_angle, direction, steps=20):
     """Calculate points along an arc."""
@@ -164,14 +221,40 @@ def calculate_parking_path(start_pos, target_pos, car_params):
     x1, y1 = start_pos
     x2, y2 = target_pos
     
-    # Calculate the angle to the target position
-    target_angle = math.atan2(y2 - y1, x2 - x1)
-    
-    # Normalize the target angle
-    target_angle = normalize_angle(target_angle)
-    
     # Current car angle
     car_angle = car_params.angle
+    
+    # Calculate the angle to the target position
+    target_angle = math.atan2(y2 - y1, x2 - x1)
+    target_angle = normalize_angle(target_angle)
+    
+    # Calculate the true center of the target bounding box
+    length = car_params.length
+    width = car_params.width
+    
+    # Calculate the corners of the rotated rectangle
+    cos_angle = math.cos(target_angle)
+    sin_angle = math.sin(target_angle)
+    half_length = length / 2
+    half_width = width / 2
+    
+    corners = [
+        (x2 + half_length * cos_angle - half_width * sin_angle,
+         y2 + half_length * sin_angle + half_width * cos_angle),
+        (x2 + half_length * cos_angle + half_width * sin_angle,
+         y2 + half_length * sin_angle - half_width * cos_angle),
+        (x2 - half_length * cos_angle + half_width * sin_angle,
+         y2 - half_length * sin_angle - half_width * cos_angle),
+        (x2 - half_length * cos_angle - half_width * sin_angle,
+         y2 - half_length * sin_angle + half_width * cos_angle)
+    ]
+    
+    # Calculate the true center (average of all corners)
+    center_x = sum(corner[0] for corner in corners) / 4
+    center_y = sum(corner[1] for corner in corners) / 4
+    
+    # Update target position to the true center
+    target_pos = (center_x, center_y)
     
     # Print parameters
     print(f"Starting Position: {start_pos}, Starting Angle: {math.degrees(car_angle)}°")
@@ -281,7 +364,7 @@ def mouse_callback(event, x, y, flags, param):
                         next_point = path_points[::5][i + 1]
                         angle = math.atan2(next_point[1] - point[1],
                                          next_point[0] - point[0])
-                        draw_car(display_image, point, angle, car_params)
+                        draw_car(display_image, point[:2], angle, car_params)
             
             # Draw current car position
             draw_car(display_image, car.pos, 0, car_params)
@@ -316,6 +399,7 @@ def process_image(image_path, model, device, save_output=False):
     pred_points = detect_marking_points(model, image, config.CONFID_THRESH_FOR_POINT, device)
     slots = None
     slot_centers = []
+    slot_angles = []  # Store angles for each slot
     
     if pred_points:
         marking_points = list(list(zip(*pred_points))[1])
@@ -329,8 +413,9 @@ def process_image(image_path, model, device, save_output=False):
             center_x = int(info['center'][0])
             center_y = int(info['center'][1])
             slot_centers.append((center_x, center_y))
+            slot_angles.append(info['angle'])  # Store the angle
             
-            print(f"Slot #{idx + 1} center: ({center_x}, {center_y})")
+            print(f"Slot #{idx + 1} center: ({center_x}, {center_y}), angle: {math.degrees(info['angle']):.1f}°")
             
             # Draw slot marker
             cv.circle(image, (center_x, center_y), 5, (0, 255, 0), -1)
@@ -354,6 +439,7 @@ def process_image(image_path, model, device, save_output=False):
         "Controls:",
         "- Drag car with left mouse button",
         "- Press 1-9 to select parking slot",
+        "- Press 'z'/'x' to rotate car",
         "- Press SPACE to generate new path",
         "- Press 'q' to quit"
     ]
@@ -369,7 +455,7 @@ def process_image(image_path, model, device, save_output=False):
     
     # Initial car draw
     display_image = image.copy()
-    draw_car(display_image, car.pos, 0, car_params)
+    draw_car(display_image, car.pos, car.angle, car_params)
     cv.imshow('Smart Parking Assistance', display_image)
     
     while True:
@@ -378,12 +464,18 @@ def process_image(image_path, model, device, save_output=False):
         
         # If a slot was selected, show the path
         if last_selected_slot[0] is not None and 0 <= last_selected_slot[0] < len(slot_centers):
-            target_pos = slot_centers[last_selected_slot[0]]
+            slot_idx = last_selected_slot[0]
+            target_pos = slot_centers[slot_idx]
+            target_angle = slot_angles[slot_idx]  # Use the stored angle
+            
+            # Calculate path using the slot's angle
             path_points = calculate_parking_path(car.pos, target_pos, car_params)
             draw_parking_path(display_image, path_points, car.angle)
             
-            # Draw car positions along the path (improved spacing and angle calculation)
-            # Use fewer ghost cars with better spacing
+            # Draw the target position with bounding box
+            draw_target_position(display_image, target_pos, target_angle, car_params)
+            
+            # Draw car positions along the path
             num_ghost_cars = min(5, len(path_points) // 10)
             if num_ghost_cars > 0:
                 indices = [i * len(path_points) // num_ghost_cars for i in range(num_ghost_cars)]
@@ -397,10 +489,17 @@ def process_image(image_path, model, device, save_output=False):
                             path_points[look_ahead][0] - path_points[idx][0]
                         )
                         # Draw ghost car with partially transparent color
-                        draw_car(display_image, path_points[idx], angle, car_params)
+                        draw_car(display_image, path_points[idx][:2], angle, car_params)
+            
+            # Draw the ghost line from the car's position in the direction it is facing
+            ghost_line_length = 50  # Length of the ghost line in pixels
+            ghost_line_end_x = car.pos[0] + ghost_line_length * math.cos(car.angle)
+            ghost_line_end_y = car.pos[1] + ghost_line_length * math.sin(car.angle)
+            cv.line(display_image, (int(car.pos[0]), int(car.pos[1])), 
+                   (int(ghost_line_end_x), int(ghost_line_end_y)), (255, 0, 0), 2)
         
         # Always draw the current car position on top
-        draw_car(display_image, car.pos, 0, car_params)
+        draw_car(display_image, car.pos, car.angle, car_params)
         cv.imshow('Smart Parking Assistance', display_image)
         
         # Handle keyboard input
@@ -412,7 +511,20 @@ def process_image(image_path, model, device, save_output=False):
             if slot_num < len(slot_centers):
                 last_selected_slot[0] = slot_num
                 current_variation = 0.0  # Reset variation for new slot
-                print(f"Selected parking slot #{slot_num + 1}")
+                print(f"\nSelected parking slot #{slot_num + 1}")
+                
+                # Get and print target position and angle
+                target_pos = slot_centers[slot_num]
+                target_angle = slot_angles[slot_num]
+                print(f"Target Position: ({target_pos[0]:.1f}, {target_pos[1]:.1f})")
+                print(f"Target Angle: {math.degrees(target_angle):.1f}°")
+                
+                # Calculate and print path end position
+                path_points = calculate_parking_path(car.pos, target_pos, car_params)
+                if path_points:
+                    end_point = path_points[-1]
+                    print(f"Path End Position: ({end_point[0]:.1f}, {end_point[1]:.1f})")
+                    print(f"End Angle: {math.degrees(end_point[2]):.1f}°")
                 
                 # Save if requested
                 if save_output:
@@ -431,8 +543,10 @@ def process_image(image_path, model, device, save_output=False):
         # Check for rotation keys
         elif key == ord('z'):  # Rotate left
             car.angle += math.radians(5)  # Rotate 5 degrees left
+            print(f"Rotated left. New angle: {math.degrees(car.angle):.2f}°")
         elif key == ord('x'):  # Rotate right
             car.angle -= math.radians(5)  # Rotate 5 degrees right
+            print(f"Rotated right. New angle: {math.degrees(car.angle):.2f}°")
         
         # Quit on 'q'
         elif key == ord('q'):
