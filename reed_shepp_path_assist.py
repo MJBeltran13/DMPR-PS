@@ -99,6 +99,12 @@ class DraggableBox:
         front_coord = ((rotated_corners[0][0] + rotated_corners[1][0]) // 2, (rotated_corners[0][1] + rotated_corners[1][1]) // 2)
         end_coord = ((rotated_corners[2][0] + rotated_corners[3][0]) // 2, (rotated_corners[2][1] + rotated_corners[3][1]) // 2)
 
+        # Calculate x and y axes of the box
+        x_axis_angle = math.degrees(math.atan2(rotated_corners[1][1] - rotated_corners[0][1], 
+                                             rotated_corners[1][0] - rotated_corners[0][0]))
+        y_axis_angle = math.degrees(math.atan2(rotated_corners[3][1] - rotated_corners[0][1], 
+                                             rotated_corners[3][0] - rotated_corners[0][0]))
+        
         # Display coordinates, angle, and label
         text = f"Center: ({center_x}, {center_y}), Angle: {self.angle}°, {self.label}"
         cv.putText(image, text, (self.top_left[0] + 5, self.top_left[1] + 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
@@ -108,6 +114,10 @@ class DraggableBox:
         end_text = f"End: ({int(end_coord[0])}, {int(end_coord[1])})"
         cv.putText(image, front_text, (self.top_left[0] + 5, self.top_left[1] + 40), cv.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
         cv.putText(image, end_text, (self.top_left[0] + 5, self.top_left[1] + 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
+        
+        # Display box axes angles
+        axes_text = f"X-axis: {x_axis_angle:.1f}°, Y-axis: {y_axis_angle:.1f}°"
+        cv.putText(image, axes_text, (self.top_left[0] + 5, self.top_left[1] + 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, self.color, 1)
 
         # Draw a dot at the end coordinate
         cv.circle(image, (int(end_coord[0]), int(end_coord[1])), 5, self.color, -1)
@@ -304,9 +314,60 @@ def generate_path(green_box, red_box, image, control_point1=None, control_point2
     start_x, start_y = int(green_end[0]), int(green_end[1])
     target_x, target_y = int(red_end[0]), int(red_end[1])
     
-    # Convert angles to radians (note: may need to adjust for coordinate system)
-    start_angle = math.radians(green_box.angle % 360)
-    goal_angle = math.radians(red_box.angle % 360)
+    # Calculate the center and corners of the green box
+    green_center_x = green_box.top_left[0] + green_box.width // 2
+    green_center_y = green_box.top_left[1] + green_box.height // 2
+
+    # Calculate rotation matrix for green box
+    green_rotation_matrix = cv.getRotationMatrix2D((green_center_x, green_center_y), green_box.angle, 1.0)
+
+    # Define the green box corners
+    green_corners = np.array([
+        [green_box.top_left[0], green_box.top_left[1]],
+        [green_box.top_left[0] + green_box.width, green_box.top_left[1]],
+        [green_box.top_left[0] + green_box.width, green_box.top_left[1] + green_box.height],
+        [green_box.top_left[0], green_box.top_left[1] + green_box.height]
+    ])
+
+    # Rotate the green box corners
+    green_rotated_corners = cv.transform(np.array([green_corners]), green_rotation_matrix)[0]
+    
+    # Calculate Y-axis angle from the green box
+    green_y_axis_angle = math.atan2(green_rotated_corners[3][1] - green_rotated_corners[0][1], 
+                                  green_rotated_corners[3][0] - green_rotated_corners[0][0])
+    
+    # Calculate the center and corners of the red box
+    red_center_x = red_box.top_left[0] + red_box.width // 2
+    red_center_y = red_box.top_left[1] + red_box.height // 2
+
+    # Calculate rotation matrix for red box
+    red_rotation_matrix = cv.getRotationMatrix2D((red_center_x, red_center_y), red_box.angle, 1.0)
+
+    # Define the red box corners
+    red_corners = np.array([
+        [red_box.top_left[0], red_box.top_left[1]],
+        [red_box.top_left[0] + red_box.width, red_box.top_left[1]],
+        [red_box.top_left[0] + red_box.width, red_box.top_left[1] + red_box.height],
+        [red_box.top_left[0], red_box.top_left[1] + red_box.height]
+    ])
+
+    # Rotate the red box corners
+    red_rotated_corners = cv.transform(np.array([red_corners]), red_rotation_matrix)[0]
+    
+    # Calculate Y-axis angle from the red box
+    red_y_axis_angle = math.atan2(red_rotated_corners[3][1] - red_rotated_corners[0][1], 
+                                red_rotated_corners[3][0] - red_rotated_corners[0][0])
+    
+    # Use the Y-axis angles for path generation
+    start_angle = green_y_axis_angle
+    goal_angle = red_y_axis_angle
+    
+    # Print the angles for debugging
+    print(f"\nUsing Y-axis angles for path generation:")
+    print(f"  Green box angle: {green_box.angle}°")
+    print(f"  Green Y-axis angle (degrees): {math.degrees(green_y_axis_angle):.1f}°")
+    print(f"  Red box angle: {red_box.angle}°")
+    print(f"  Red Y-axis angle (degrees): {math.degrees(red_y_axis_angle):.1f}°")
     
     # Calculate distance between points
     distance = math.sqrt((target_x - start_x)**2 + (target_y - start_y)**2)
@@ -317,7 +378,7 @@ def generate_path(green_box, red_box, image, control_point1=None, control_point2
                          max(CONFIG['MIN_TURNING_RADIUS'], 
                              distance / CONFIG['DISTANCE_SCALING']))
     
-    # Compute path using the rotation_offset
+    # Compute path using the Y-axis angles
     path_points, path_segments = compute_reed_shepp_path(
         start_x, start_y, start_angle,
         target_x, target_y, goal_angle,
@@ -438,45 +499,50 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     distance = math.sqrt(dx*dx + dy*dy)
     
     # Calculate angles - use exact angles from cars without modifications
-    start_direction_angle = start_angle
-    goal_direction_angle = goal_angle
+    start_direction_angle = start_angle  # This is now the Y-axis angle from the green box
+    goal_direction_angle = goal_angle    # This is the Y-axis angle of the red box
     
     # Always print the angle information to the console/serial monitor
     print("\nPath Generation Angle Information:")
-    print(f"  Green car angle: {math.degrees(start_angle):.1f}°") 
-    print(f"  Red car angle: {math.degrees(goal_angle):.1f}°")
+    print(f"  Using Y-axis angle for green box: {math.degrees(start_angle):.1f}°") 
+    print(f"  Red car Y-axis angle: {math.degrees(goal_angle):.1f}°")
     
-    # To maintain true perpendicularity:
-    # 1. Get the car's angle in radians (including any rotation)
-    car_angle_rad = start_angle
-    if rotation_offset != 0:
-        car_angle_rad += math.radians(rotation_offset)
-        print(f"  Applied rotation offset: {rotation_offset}°")
+    # Since we're already using the Y-axis angle as start_angle,
+    # we don't need to apply additional rotations or calculate perpendicular angles.
+    # The Y-axis is already perpendicular to the X-axis of the box.
+    adjusted_start_angle = start_angle
     
-    # 2. Calculate perpendicular angle by adding π/2 (90 degrees)
-    # For clockwise perpendicular, subtract π/2
-    adjusted_start_angle = car_angle_rad - math.pi/2
+    print(f"  Final start angle (Y-axis): {math.degrees(adjusted_start_angle):.1f}°")
     
-    print(f"  Car angle after rotation: {math.degrees(car_angle_rad):.1f}°")
-    print(f"  Final path angle (perpendicular): {math.degrees(adjusted_start_angle):.1f}°")
+    # The distance to place the intermediate control points is now scaled based on distance
+    # Use a smaller percentage of distance for shorter paths
+    if distance < 100:
+        intermediate_dist_factor = 0.2  # 20% of distance for very short paths
+    elif distance < 200:
+        intermediate_dist_factor = 0.3  # 30% of distance for short paths
+    else:
+        intermediate_dist_factor = 0.4  # 40% of distance for longer paths
     
-    # The distance to place the intermediate control points
-    intermediate_dist = min(distance * 0.4, 100)  # Reduced from 0.7 to 0.4, and max from 200 to 100
+    intermediate_dist = min(distance * intermediate_dist_factor, 80)
+    print(f"  Intermediate distance factor: {intermediate_dist_factor}, resulting distance: {intermediate_dist:.1f}")
 
     # Add a fixed distance straight segment at the start
-    fixed_start_distance = 50  # Fixed initial segment
+    fixed_start_distance = 10  # Fixed initial segment
     start_segment_x = start_x + fixed_start_distance * math.cos(adjusted_start_angle)
     start_segment_y = start_y + fixed_start_distance * math.sin(adjusted_start_angle)
     print(f"  Added fixed start segment: {fixed_start_distance} pixels at {math.degrees(adjusted_start_angle):.1f}°")
     
-    # Adjust the approach angle for reverse parking
-    approach_angle = goal_angle + math.radians(90)  
-    print(f"  Approach angle: {math.degrees(approach_angle):.1f}° (red car angle + 90°)")
+    # Adjust the approach angle to use red box's Y-axis for proper perpendicular approach
+    # We need to reverse the direction (add 180 degrees) to approach from the correct direction
+    approach_angle = goal_angle + math.pi  # Add 180 degrees to reverse the direction
+    print(f"  Approach angle: {math.degrees(approach_angle):.1f}° (red car's Y-axis + 180°)")
     
     # Calculate position to approach from using the adjusted angle
+    # Scale approach distance based on overall path length
     if distance < 208:
-        approach_distance = min(200, distance * 0.5)  # Increased from 100 to 200, and ratio from 0.3 to 0.5
-        print(f"  Reduced approach distance: {approach_distance:.1f} (cars are close)")
+        approach_factor = 0.4  # 40% of distance for shorter paths
+        approach_distance = min(distance * approach_factor, 100)
+        print(f"  Reduced approach distance: {approach_distance:.1f} (scaled based on path length)")
     else:
         approach_distance = 208  # 208 pixels is the distance between the two cars in the image
     
@@ -493,18 +559,75 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
         reverse_points.append((segment_x, segment_y))
     
     # Point for leaving the starting position - now starting from the end of the fixed segment
+    # Scale the intermediate distance based on overall path length
     leaving_start_x = start_segment_x + (intermediate_dist - fixed_start_distance) * math.cos(adjusted_start_angle)
     leaving_start_y = start_segment_y + (intermediate_dist - fixed_start_distance) * math.sin(adjusted_start_angle)
     
     # Calculate a good middle control point that creates a smooth S-curve
-    mid_x = (leaving_start_x + reverse_points[0][0]) / 2
-    mid_y = (leaving_start_y + reverse_points[0][1]) / 2
+    # Make the midpoint position dependent on the distance
+    mid_factor = min(0.6, max(0.3, distance / 500))  # Scale between 0.3 and 0.6 based on distance
+    mid_x = (leaving_start_x * (1 - mid_factor) + reverse_points[0][0] * mid_factor)
+    mid_y = (leaving_start_y * (1 - mid_factor) + reverse_points[0][1] * mid_factor)
     
-    # Add a slight offset to create a nice curve
+    # Add a slight offset to create a nice curve - scale based on distance
     perpendicular_angle = adjusted_start_angle + math.pi/2
-    curve_offset = min(distance * 0.15, 30)  # Reduced from 0.2 to 0.15, and max from 40 to 30
+    curve_offset = min(distance * 0.1, 20)  # Reduced offset scaling for shorter paths
     mid_x += curve_offset * math.cos(perpendicular_angle)
     mid_y += curve_offset * math.sin(perpendicular_angle)
+    
+    # Calculate curve characteristics to determine point reduction
+    # Measure the "directness" between start, mid, and end points
+    start_to_mid_distance = math.sqrt((mid_x - leaving_start_x)**2 + (mid_y - leaving_start_y)**2)
+    mid_to_end_distance = math.sqrt((reverse_points[0][0] - mid_x)**2 + (reverse_points[0][1] - mid_y)**2)
+    start_to_end_distance = math.sqrt((reverse_points[0][0] - leaving_start_x)**2 + (reverse_points[0][1] - leaving_start_y)**2)
+    
+    # Calculate curve directness ratio (1.0 means completely straight line)
+    curve_directness = start_to_end_distance / (start_to_mid_distance + mid_to_end_distance)
+    
+    # Calculate angle between vectors to determine sharpness of turn
+    v1_x = mid_x - leaving_start_x
+    v1_y = mid_y - leaving_start_y
+    v2_x = reverse_points[0][0] - mid_x
+    v2_y = reverse_points[0][1] - mid_y
+    
+    # Normalize vectors
+    v1_length = math.sqrt(v1_x**2 + v1_y**2)
+    v2_length = math.sqrt(v2_x**2 + v2_y**2)
+    
+    if v1_length > 0 and v2_length > 0:
+        v1_x /= v1_length
+        v1_y /= v1_length
+        v2_x /= v2_length
+        v2_y /= v2_length
+        
+        # Calculate dot product and angle
+        dot_product = v1_x * v2_x + v1_y * v2_y
+        dot_product = max(-1.0, min(1.0, dot_product))  # Clamp to avoid domain errors
+        turn_angle = math.acos(dot_product)
+        turn_angle_deg = math.degrees(turn_angle)
+    else:
+        turn_angle_deg = 0
+    
+    print(f"  Curve parameters: mid_factor={mid_factor:.2f}, curve_offset={curve_offset:.1f}")
+    print(f"  Curve analysis: directness={curve_directness:.2f}, turn angle={turn_angle_deg:.1f}°")
+    
+    # Determine forward points reduction based on curve characteristics
+    forward_points_reduction = 0
+    
+    # If curve is very direct (nearly straight), reduce points
+    if curve_directness > 0.9:
+        forward_points_reduction += 3
+        print("  Reducing points: curve is nearly straight")
+    
+    # If turn angle is small, reduce points
+    if turn_angle_deg < 30:
+        forward_points_reduction += 2
+        print("  Reducing points: turn angle is small")
+    
+    # If curve distance is very short, reduce points
+    if start_to_mid_distance + mid_to_end_distance < 50:
+        forward_points_reduction += 2
+        print("  Reducing points: curve is very short")
     
     # Generate points for the path
     points = []
@@ -520,9 +643,19 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     
     # Allocate remaining points
     remaining_points = num_points - fixed_segment_points
-    forward_ratio = 0.25 if distance >= 10 else 0.2  # Reduced from 0.4/0.3 to 0.25/0.2
-    forward_points = int(remaining_points * forward_ratio)
+    # Scale forward ratio based on distance
+    if distance < 100:
+        forward_ratio = 0.15  # 15% for very short paths
+    elif distance < 200:
+        forward_ratio = 0.2   # 20% for short paths
+    else:
+        forward_ratio = 0.25  # 25% for longer paths
+    
+    # Apply the reduction to forward points
+    forward_points = max(3, int(remaining_points * forward_ratio) - forward_points_reduction)
     reverse_points_count = remaining_points - forward_points
+    
+    print(f"  Point allocation: {fixed_segment_points} fixed, {forward_points} forward (-{forward_points_reduction} reduction), {reverse_points_count} reverse")
     
     # Add forward curve points
     for i in range(forward_points):
@@ -1108,14 +1241,14 @@ def process_image(image_path):
         # Rotate green box with 'z' and 'x' keys
         elif key == ord('z'):
             green_box.rotate(-5)
-            rotation_offset = 5  # Keep same direction as box rotation
+            rotation_offset = 5  # Invert: when box rotates counterclockwise, use clockwise offset
             show_path = False
-            print("Rotating green box -5°, path adjusting to maintain perpendicularity")
+            print("Rotating green box -5°, applying +5° offset for perpendicular path")
         elif key == ord('x'):
             green_box.rotate(5)
-            rotation_offset = -5  # Keep same direction as box rotation
+            rotation_offset = -5  # Invert: when box rotates clockwise, use counterclockwise offset
             show_path = False
-            print("Rotating green box +5°, path adjusting to maintain perpendicularity")
+            print("Rotating green box +5°, applying -5° offset for perpendicular path")
 
         # Save parameters to CSV when spacebar is pressed
         elif key == ord(' '):
