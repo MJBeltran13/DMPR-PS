@@ -523,11 +523,12 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     else:
         intermediate_dist_factor = 0.4  # 40% of distance for longer paths
     
-    intermediate_dist = min(distance * intermediate_dist_factor, 80)
+    # Ensure a minimum distance to prevent intersection with the green box
+    intermediate_dist = max(30, min(distance * intermediate_dist_factor, 80))
     print(f"  Intermediate distance factor: {intermediate_dist_factor}, resulting distance: {intermediate_dist:.1f}")
 
-    # Add a fixed distance straight segment at the start
-    fixed_start_distance = 10  # Fixed initial segment
+    # Increase the fixed start segment to move away from the green box
+    fixed_start_distance = 1  # Increased from 10 to 25
     start_segment_x = start_x + fixed_start_distance * math.cos(adjusted_start_angle)
     start_segment_y = start_y + fixed_start_distance * math.sin(adjusted_start_angle)
     print(f"  Added fixed start segment: {fixed_start_distance} pixels at {math.degrees(adjusted_start_angle):.1f}°")
@@ -563,17 +564,22 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     leaving_start_x = start_segment_x + (intermediate_dist - fixed_start_distance) * math.cos(adjusted_start_angle)
     leaving_start_y = start_segment_y + (intermediate_dist - fixed_start_distance) * math.sin(adjusted_start_angle)
     
-    # Calculate a good middle control point that creates a smooth S-curve
-    # Make the midpoint position dependent on the distance
-    mid_factor = min(0.6, max(0.3, distance / 500))  # Scale between 0.3 and 0.6 based on distance
-    mid_x = (leaving_start_x * (1 - mid_factor) + reverse_points[0][0] * mid_factor)
-    mid_y = (leaving_start_y * (1 - mid_factor) + reverse_points[0][1] * mid_factor)
+    # Move the mid-control point away from the green box
+    # Calculate perpendicular offset to avoid the green box
+    perp_offset_angle = adjusted_start_angle + math.pi/2  # 90 degrees clockwise
+    perp_offset_distance = max(20, min(40, distance * 0.15))  # Scale with distance but keep a minimum
     
-    # Add a slight offset to create a nice curve - scale based on distance
-    perpendicular_angle = adjusted_start_angle + math.pi/2
-    curve_offset = min(distance * 0.1, 20)  # Reduced offset scaling for shorter paths
-    mid_x += curve_offset * math.cos(perpendicular_angle)
-    mid_y += curve_offset * math.sin(perpendicular_angle)
+    # Calculate the midpoint between leaving start and reverse start but apply perpendicular offset
+    # Reduce the weight of the leaving_start point to push the curve away from the green box
+    mid_factor = min(0.7, max(0.4, distance / 500))  # Increase min and max values
+    base_mid_x = (leaving_start_x * (1 - mid_factor) + reverse_points[0][0] * mid_factor)
+    base_mid_y = (leaving_start_y * (1 - mid_factor) + reverse_points[0][1] * mid_factor)
+    
+    # Apply perpendicular offset to move away from the green box
+    mid_x = base_mid_x + perp_offset_distance * math.cos(perp_offset_angle)
+    mid_y = base_mid_y + perp_offset_distance * math.sin(perp_offset_angle)
+    
+    print(f"  Curve parameters: mid_factor={mid_factor:.2f}, perp_offset={perp_offset_distance:.1f}")
     
     # Calculate curve characteristics to determine point reduction
     # Measure the "directness" between start, mid, and end points
@@ -608,7 +614,6 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     else:
         turn_angle_deg = 0
     
-    print(f"  Curve parameters: mid_factor={mid_factor:.2f}, curve_offset={curve_offset:.1f}")
     print(f"  Curve analysis: directness={curve_directness:.2f}, turn angle={turn_angle_deg:.1f}°")
     
     # Determine forward points reduction based on curve characteristics
