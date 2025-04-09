@@ -9,6 +9,8 @@ import json
 import torch
 from sklearn.ensemble import RandomForestRegressor
 import joblib
+import threading
+import time
 
 # Global configuration parameters for Reed-Shepp path generation
 CONFIG = {
@@ -47,6 +49,77 @@ CONFIG = {
     # Grid color
     'GRID_COLOR': (100, 100, 100),
 }
+
+# Setup for dynamic configuration loading
+def load_config_from_file():
+    """Load configuration from the config file if it exists"""
+    try:
+        if os.path.exists('config/reed_shepp_config.json'):
+            with open('config/reed_shepp_config.json', 'r') as f:
+                loaded_config = json.load(f)
+            
+            # Update CONFIG with loaded values
+            if 'CONFIG' in loaded_config:
+                CONFIG.update(loaded_config['CONFIG'])
+                print("Configuration loaded from config/reed_shepp_config.json")
+    except Exception as e:
+        print(f"Error loading configuration: {e}")
+
+# Load configuration at startup
+load_config_from_file()
+
+# Start a background thread to watch for configuration changes
+def watch_for_config_changes():
+    """Watch for configuration change signals and reload when detected"""
+    signal_file = 'config/config_updated.signal'
+    config_file = 'config/reed_shepp_config.json'
+    last_config_modified = 0
+    last_signal_modified = 0
+    global config_changed
+    config_changed = False
+    
+    while True:
+        try:
+            config_modified = False
+            
+            # Check if the config file has been modified
+            if os.path.exists(config_file):
+                config_time = os.path.getmtime(config_file)
+                
+                # Only reload if the config file is newer than our last check
+                if config_time > last_config_modified:
+                    last_config_modified = config_time
+                    config_modified = True
+            
+            # Also check for the signal file
+            if os.path.exists(signal_file):
+                signal_time = os.path.getmtime(signal_file)
+                
+                # Check if signal is newer than last time we saw it
+                if signal_time > last_signal_modified:
+                    last_signal_modified = signal_time
+                    config_modified = True
+                    
+                    # Delete the signal file
+                    try:
+                        os.remove(signal_file)
+                    except:
+                        pass
+            
+            # Reload config if needed
+            if config_modified:
+                load_config_from_file()
+                print("Configuration reloaded due to external changes")
+                config_changed = True  # Set the global flag
+                
+        except Exception as e:
+            print(f"Error in config watch thread: {e}")
+            
+        time.sleep(0.5)  # Check every half second
+
+# Start the config watch thread
+config_watch_thread = threading.Thread(target=watch_for_config_changes, daemon=True)
+config_watch_thread.start()
 
 # Function to append box parameters to a CSV file with a timestamp
 def save_to_csv(red_box, green_box, filename='box_parameters.csv'):
@@ -506,11 +579,16 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     print("\nPath Generation Angle Information:")
     print(f"  Using Y-axis angle for green box: {math.degrees(start_angle):.1f}°") 
     print(f"  Red car Y-axis angle: {math.degrees(goal_angle):.1f}°")
+    print(f"  Path distance: {distance:.1f} pixels")
     
-    # Since we're already using the Y-axis angle as start_angle,
-    # we don't need to apply additional rotations or calculate perpendicular angles.
-    # The Y-axis is already perpendicular to the X-axis of the box.
-    adjusted_start_angle = start_angle
+    # Apply rotation offset from user input (when rotating green box with z/x keys)
+    # Adjust start angle by the offset in radians
+    if rotation_offset != 0:
+        offset_radians = math.radians(rotation_offset)
+        adjusted_start_angle = start_angle + offset_radians
+        print(f"  Applying rotation offset: {rotation_offset}° ({math.degrees(offset_radians):.1f}°)")
+    else:
+        adjusted_start_angle = start_angle
     
     print(f"  Final start angle (Y-axis): {math.degrees(adjusted_start_angle):.1f}°")
     
@@ -540,12 +618,12 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     
     # Calculate position to approach from using the adjusted angle
     # Scale approach distance based on overall path length
-    if distance < 208:
+    if distance < 180:
         approach_factor = 0.4  # 40% of distance for shorter paths
         approach_distance = min(distance * approach_factor, 100)
         print(f"  Reduced approach distance: {approach_distance:.1f} (scaled based on path length)")
     else:
-        approach_distance = 208  # 208 pixels is the distance between the two cars in the image
+        approach_distance = 180  # 208 pixels is the distance between the two cars in the image
     
     # Calculate multiple reverse segments
     num_reverse_segments = 10  # Number of reverse segments
@@ -566,7 +644,12 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     
     # Move the mid-control point away from the green box
     # Calculate perpendicular offset to avoid the green box
-    perp_offset_angle = adjusted_start_angle + math.pi/2  # 90 degrees clockwise
+    # Choose perpendicular direction based on rotation offset
+    if rotation_offset < 0:  # Rotating clockwise
+        perp_offset_angle = adjusted_start_angle - math.pi/2  # Offset perpendicular to the left
+    else:  # Default or rotating counter-clockwise
+        perp_offset_angle = adjusted_start_angle + math.pi/2  # Offset perpendicular to the right
+    
     perp_offset_distance = max(20, min(40, distance * 0.15))  # Scale with distance but keep a minimum
     
     # Calculate the midpoint between leaving start and reverse start but apply perpendicular offset
@@ -579,7 +662,8 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     mid_x = base_mid_x + perp_offset_distance * math.cos(perp_offset_angle)
     mid_y = base_mid_y + perp_offset_distance * math.sin(perp_offset_angle)
     
-    print(f"  Curve parameters: mid_factor={mid_factor:.2f}, perp_offset={perp_offset_distance:.1f}")
+    print(f"  Perpendicular offset: angle={math.degrees(perp_offset_angle):.1f}°, distance={perp_offset_distance:.1f}")
+    print(f"  Curve parameters: mid_factor={mid_factor:.2f}")
     
     # Calculate curve characteristics to determine point reduction
     # Measure the "directness" between start, mid, and end points
@@ -619,20 +703,48 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     # Determine forward points reduction based on curve characteristics
     forward_points_reduction = 0
     
+    # Apply base reduction based on path distance - higher reduction for shorter paths
+    if distance < 100:
+        # High reduction for very short paths
+        distance_reduction = 6
+        print(f"  Adding high reduction ({distance_reduction}) for very short path (<100 pixels)")
+    elif distance < 200:
+        # Medium reduction for short paths
+        distance_reduction = 4
+        print(f"  Adding medium reduction ({distance_reduction}) for short path (<200 pixels)")
+    elif distance < 300:
+        # Small reduction for medium paths
+        distance_reduction = 2
+        print(f"  Adding small reduction ({distance_reduction}) for medium path (<300 pixels)")
+    else:
+        # No additional reduction for long paths
+        distance_reduction = 0
+    
+    forward_points_reduction += distance_reduction
+    
     # If curve is very direct (nearly straight), reduce points
     if curve_directness > 0.9:
         forward_points_reduction += 3
-        print("  Reducing points: curve is nearly straight")
+        print("  Adding 3 point reduction: curve is nearly straight")
+    elif curve_directness > 0.7:
+        forward_points_reduction += 2
+        print("  Adding 2 point reduction: curve is fairly direct")
     
     # If turn angle is small, reduce points
     if turn_angle_deg < 30:
         forward_points_reduction += 2
-        print("  Reducing points: turn angle is small")
+        print("  Adding 2 point reduction: turn angle is small (<30°)")
+    elif turn_angle_deg < 60:
+        forward_points_reduction += 1
+        print("  Adding 1 point reduction: turn angle is moderate (<60°)")
     
     # If curve distance is very short, reduce points
     if start_to_mid_distance + mid_to_end_distance < 50:
+        forward_points_reduction += 3
+        print("  Adding 3 point reduction: curve is very short (<50 pixels)")
+    elif start_to_mid_distance + mid_to_end_distance < 100:
         forward_points_reduction += 2
-        print("  Reducing points: curve is very short")
+        print("  Adding 2 point reduction: curve is short (<100 pixels)")
     
     # Generate points for the path
     points = []
@@ -656,26 +768,34 @@ def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_
     else:
         forward_ratio = 0.25  # 25% for longer paths
     
-    # Apply the reduction to forward points
-    forward_points = max(3, int(remaining_points * forward_ratio) - forward_points_reduction)
+    # Apply the reduction to forward points with a minimum for forward points
+    forward_points_base = int(remaining_points * forward_ratio)
+    forward_points = max(3, forward_points_base - forward_points_reduction)
+    
+    # Ensure we're not reducing by more than 80% of the base forward points
+    max_reduction = int(forward_points_base * 0.8)
+    if forward_points_reduction > max_reduction:
+        forward_points = max(3, forward_points_base - max_reduction)
+        print(f"  Limiting maximum reduction to {max_reduction} points (80% of base {forward_points_base})")
+    
     reverse_points_count = remaining_points - forward_points
     
-    print(f"  Point allocation: {fixed_segment_points} fixed, {forward_points} forward (-{forward_points_reduction} reduction), {reverse_points_count} reverse")
+    print(f"  Point allocation: {fixed_segment_points} fixed, {forward_points} forward (-{forward_points_reduction} reduction from {forward_points_base}), {reverse_points_count} reverse")
     
     # Add forward curve points
     for i in range(forward_points):
-        t = i / (forward_points - 1)
+        t = i / (forward_points - 1) if forward_points > 1 else 0.5
         x = (1-t)*(1-t) * start_segment_x + 2*(1-t)*t * mid_x + t*t * reverse_points[0][0]
         y = (1-t)*(1-t) * start_segment_y + 2*(1-t)*t * mid_y + t*t * reverse_points[0][1]
         points.append((x, y))
     
     # Add reverse segment points
-    points_per_segment = reverse_points_count // num_reverse_segments
+    points_per_segment = max(1, reverse_points_count // num_reverse_segments)
     for i in range(len(reverse_points) - 1):
         start_pt = reverse_points[i]
         end_pt = reverse_points[i + 1]
         for j in range(points_per_segment):
-            t = j / points_per_segment
+            t = j / points_per_segment if points_per_segment > 0 else 0
             x = start_pt[0] + t * (end_pt[0] - start_pt[0])
             y = start_pt[1] + t * (end_pt[1] - start_pt[1])
             points.append((x, y))
@@ -1163,8 +1283,10 @@ def mouse_callback(event, x, y, flags, param):
     if CONFIG['SHOW_GRID']:
         display_image = draw_grid(display_image)
     
-    # Generate and draw the Reed-Shepp path
-    display_image, _, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=0)
+    # Generate and draw the Reed-Shepp path with the current rotation offset
+    # Get rotation_offset from the global state in process_image
+    global current_rotation_offset
+    display_image, _, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=current_rotation_offset)
     
     # Draw boxes
     red_box.draw(display_image)
@@ -1201,9 +1323,12 @@ def process_image(image_path):
     show_path = False
     path_points = []
     
-    # Track rotation offset for the green car
-    # When the car is manually rotated, this will be set to 5, otherwise 0
-    rotation_offset = 0
+    # Track rotation offset for the green car as a global to share with callback
+    global current_rotation_offset
+    current_rotation_offset = 0
+    
+    # Reference to config_changed global
+    global config_changed
     
     # Set up window and mouse callback
     cv.namedWindow('Image Display')
@@ -1230,10 +1355,18 @@ def process_image(image_path):
     print("- 'g': Toggle grid display")
     print("- Space: Save box parameters to CSV")
     print("- 'q': Quit\n")
+    print("- Dynamic configuration enabled - Use reed_shepp_config_ui.py to adjust settings in real-time")
     
     # Wait for 'q' to quit
     while True:
-        key = cv.waitKey(1) & 0xFF
+        key = cv.waitKey(100) & 0xFF  # Reduced wait time to check more frequently
+        
+        # Check for configuration changes flag
+        refresh_needed = False
+        if config_changed:
+            config_changed = False
+            refresh_needed = True
+            print("Refreshing display with new configuration")
         
         # Rotate red box with 'c' and 'v' keys
         if key == ord('c'):
@@ -1246,12 +1379,12 @@ def process_image(image_path):
         # Rotate green box with 'z' and 'x' keys
         elif key == ord('z'):
             green_box.rotate(-5)
-            rotation_offset = 5  # Invert: when box rotates counterclockwise, use clockwise offset
+            current_rotation_offset = 5  # Invert: when box rotates counterclockwise, use clockwise offset
             show_path = False
             print("Rotating green box -5°, applying +5° offset for perpendicular path")
         elif key == ord('x'):
             green_box.rotate(5)
-            rotation_offset = -5  # Invert: when box rotates clockwise, use counterclockwise offset
+            current_rotation_offset = -5  # Invert: when box rotates clockwise, use counterclockwise offset
             show_path = False
             print("Rotating green box +5°, applying -5° offset for perpendicular path")
 
@@ -1263,13 +1396,7 @@ def process_image(image_path):
         # Generate and show path when 'p' is pressed
         elif key == ord('p'):
             show_path = True
-            display_image = image.copy()
-            # Pass the rotation_offset to the generate_path function
-            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
-            red_box.draw(display_image)
-            green_box.draw(display_image)
-            cv.imshow('Image Display', display_image)
-            print("Generating Reed-Shepp path...")
+            refresh_needed = True
         
         # Approve the path
         elif key == ord('a') and show_path:
@@ -1289,11 +1416,7 @@ def process_image(image_path):
             CONFIG['MAX_TURNING_RADIUS'] += 5
             print(f"Increased turning radius range: {CONFIG['MIN_TURNING_RADIUS']}-{CONFIG['MAX_TURNING_RADIUS']}")
             if show_path:
-                display_image = image.copy()
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
-                red_box.draw(display_image)
-                green_box.draw(display_image)
-                cv.imshow('Image Display', display_image)
+                refresh_needed = True
         
         # Decrease turning radius
         elif key == ord('-') or key == ord('_'):  # '_' is often Shift+- on keyboards
@@ -1301,50 +1424,34 @@ def process_image(image_path):
             CONFIG['MAX_TURNING_RADIUS'] = max(10, CONFIG['MAX_TURNING_RADIUS'] - 5)
             print(f"Decreased turning radius range: {CONFIG['MIN_TURNING_RADIUS']}-{CONFIG['MAX_TURNING_RADIUS']}")
             if show_path:
-                display_image = image.copy()
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
-                red_box.draw(display_image)
-                green_box.draw(display_image)
-                cv.imshow('Image Display', display_image)
+                refresh_needed = True
         
         # Toggle debug visualization
         elif key == ord('d'):
             CONFIG['DEBUG_VISUALIZATION'] = not CONFIG['DEBUG_VISUALIZATION']
             print(f"Debug visualization: {'ON' if CONFIG['DEBUG_VISUALIZATION'] else 'OFF'}")
             if show_path:
-                display_image = image.copy()
-                if CONFIG['SHOW_GRID']:
-                    display_image = draw_grid(display_image)
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
-                red_box.draw(display_image)
-                green_box.draw(display_image)
-                cv.imshow('Image Display', display_image)
+                refresh_needed = True
         
         # Toggle grid display
         elif key == ord('g'):
             CONFIG['SHOW_GRID'] = not CONFIG['SHOW_GRID']
             print(f"Grid display: {'ON' if CONFIG['SHOW_GRID'] else 'OFF'}")
+            refresh_needed = True
+        
+        # Update display when anything changes
+        if refresh_needed or (show_path and key != 255):  # 255 means no key pressed
             display_image = image.copy()
             if CONFIG['SHOW_GRID']:
                 display_image = draw_grid(display_image)
             if show_path:
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
-                red_box.draw(display_image)
-                green_box.draw(display_image)
-                cv.imshow('Image Display', display_image)
-                
-        # Update display when anything changes
-        elif show_path:
-            display_image = image.copy()
-            if CONFIG['SHOW_GRID']:
-                display_image = draw_grid(display_image)
-            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
+                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=current_rotation_offset)
             red_box.draw(display_image)
             green_box.draw(display_image)
             cv.imshow('Image Display', display_image)
         
         # Quit on 'q'
-        elif key == ord('q'):
+        if key == ord('q'):
             break
 
     cv.destroyAllWindows()
