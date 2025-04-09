@@ -40,6 +40,12 @@ CONFIG = {
     'PATH_SMOOTHING': 0.1,  # Reduced from 0.2 for better endpoint accuracy
     # Prefer reversing maneuvers when appropriate
     'FAVOR_REVERSING': True,
+    # Show grid
+    'SHOW_GRID': False,
+    # Grid size in pixels
+    'GRID_SIZE': 50,
+    # Grid color
+    'GRID_COLOR': (100, 100, 100),
 }
 
 # Function to append box parameters to a CSV file with a timestamp
@@ -288,7 +294,7 @@ class PathTrainer:
             return None, None
 
 
-def generate_path(green_box, red_box, image, control_point1=None, control_point2=None, use_ml=False, path_trainer=None):
+def generate_path(green_box, red_box, image, control_point1=None, control_point2=None, use_ml=False, path_trainer=None, rotation_offset=0):
     """Generate a realistic car path from current position (green) to target position (red) using Reed-Shepp curves."""
     # Get the centers and end coordinates of both boxes
     _, green_end = green_box.get_end_coordinates()
@@ -311,79 +317,61 @@ def generate_path(green_box, red_box, image, control_point1=None, control_point2
                          max(CONFIG['MIN_TURNING_RADIUS'], 
                              distance / CONFIG['DISTANCE_SCALING']))
     
-    # Compute Reed-Shepp path
+    # Compute path using the rotation_offset
     path_points, path_segments = compute_reed_shepp_path(
         start_x, start_y, start_angle,
         target_x, target_y, goal_angle,
-        turning_radius
+        turning_radius,
+        rotation_offset
     )
     
-    # Ensure the path connects to the target by adding the exact target point
-    if path_points and len(path_points) > 0:
-        # Add the exact target position as the last point
-        path_points.append((target_x, target_y))
+    # Get the indices for different path segments
+    fixed_segment_points = 10  # Same as in compute_reed_shepp_path
+    remaining_points = CONFIG['PATH_POINTS'] - fixed_segment_points
     
-    # Draw the path with segments in different colors to indicate direction
-    forward_color = CONFIG['PATH_COLOR']  # Green for forward
-    reverse_color = CONFIG['REVERSE_COLOR'] # Red for reverse
-    
-    # Draw the main path with direction indicators
-    last_point = None
-    current_color = forward_color
-    direction_changes = []
-    
-    # Process path in segments if available
-    if path_segments:
-        # Draw each segment with appropriate color based on direction
-        point_index = 0
-        for segment_type, length in path_segments:
-            is_reverse = length < 0
-            segment_color = reverse_color if is_reverse else forward_color
-            
-            # Find how many points in this segment
-            segment_points = 0
-            while point_index + segment_points < len(path_points):
-                segment_points += 1
-                # If we've reached the end of all points or there's a direction change
-                if point_index + segment_points >= len(path_points):
-                    break
-            
-            # Draw this segment
-            for i in range(point_index, point_index + segment_points - 1):
-                pt1 = (int(path_points[i][0]), int(path_points[i][1]))
-                pt2 = (int(path_points[i+1][0]), int(path_points[i+1][1]))
-                cv.line(image, pt1, pt2, segment_color, CONFIG['PATH_THICKNESS'])
-                
-                # Add arrow for direction
-                if i % 8 == 0:  # Add direction indicators periodically
-                    dx = path_points[i+1][0] - path_points[i][0]
-                    dy = path_points[i+1][1] - path_points[i][1]
-                    if dx*dx + dy*dy > 0:  # Check if points are different
-                        angle = math.atan2(dy, dx)
-                        arrow_length = 10
-                        # Draw direction arrow
-                        if is_reverse:
-                            # Arrow pointing backward (opposite of movement direction)
-                            cv.line(image, pt1,
-                                  (int(pt1[0] - arrow_length * math.cos(angle)),
-                                   int(pt1[1] - arrow_length * math.sin(angle))),
-                                  (0, 0, 255), 2)
-                        else:
-                            # Arrow pointing forward (in movement direction)
-                            cv.line(image, pt1,
-                                  (int(pt1[0] + arrow_length * math.cos(angle)),
-                                   int(pt1[1] + arrow_length * math.sin(angle))),
-                                  (0, 255, 0), 2)
-            
-            point_index += segment_points - 1
-            if point_index >= len(path_points):
-                break
+    # Calculate forward segment points (same calculation as in compute_reed_shepp_path)
+    if distance < 10:
+        forward_ratio = 0.3
     else:
-        # Fallback to simple visualization if segments not available
-        for i in range(1, len(path_points)):
+        forward_ratio = 0.4
+    
+    forward_points = int(remaining_points * forward_ratio)
+    segment1_end_idx = fixed_segment_points
+    segment2_end_idx = fixed_segment_points + forward_points
+    
+    # Draw the path with different colors for each segment
+    # First segment (fixed start) - Green
+    segment1_color = (0, 255, 0)  # Green in BGR
+    for i in range(1, segment1_end_idx):
+        pt1 = (int(path_points[i-1][0]), int(path_points[i-1][1]))
+        pt2 = (int(path_points[i][0]), int(path_points[i][1]))
+        cv.line(image, pt1, pt2, segment1_color, CONFIG['PATH_THICKNESS'])
+    
+    # Second segment (forward curve) - Blue
+    segment2_color = (255, 165, 0)  # Blue in BGR
+    for i in range(segment1_end_idx, segment2_end_idx):
+        pt1 = (int(path_points[i-1][0]), int(path_points[i-1][1]))
+        pt2 = (int(path_points[i][0]), int(path_points[i][1]))
+        cv.line(image, pt1, pt2, segment2_color, CONFIG['PATH_THICKNESS'])
+    
+    # Third segment (reverse motion) - Red
+    segment3_color = (0, 0, 255)  # Red in BGR
+    for i in range(segment2_end_idx, len(path_points)):
+        if i > 0:  # Skip first point which is already drawn
             pt1 = (int(path_points[i-1][0]), int(path_points[i-1][1]))
             pt2 = (int(path_points[i][0]), int(path_points[i][1]))
-            cv.line(image, pt1, pt2, forward_color, CONFIG['PATH_THICKNESS'])
+            cv.line(image, pt1, pt2, segment3_color, CONFIG['PATH_THICKNESS'])
+    
+    # Draw small circles at segment transition points
+    cv.circle(image, (int(path_points[segment1_end_idx-1][0]), int(path_points[segment1_end_idx-1][1])), 
+             5, (0, 255, 255), -1)  # Yellow dot at end of segment 1
+    cv.circle(image, (int(path_points[segment2_end_idx-1][0]), int(path_points[segment2_end_idx-1][1])), 
+             5, (0, 255, 255), -1)  # Yellow dot at end of segment 2
+    
+    # Draw small circles at key points to visualize the curve better
+    for i in range(0, len(path_points), max(1, len(path_points) // 10)):
+        pt = (int(path_points[i][0]), int(path_points[i][1]))
+        cv.circle(image, pt, 3, (0, 165, 255), -1)  # Orange dots along path
     
     # Draw the final connection to the target explicitly
     if len(path_points) >= 2:
@@ -396,11 +384,15 @@ def generate_path(green_box, red_box, image, control_point1=None, control_point2
     cv.putText(image, f"Path Length: {distance:.1f} pixels, Turning Radius: {turning_radius:.1f}", 
               (10, image.shape[0] - 50), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
+    # Draw segment info legend
+    cv.putText(image, "Segments: Green=Start, Blue=Forward, Red=Reverse", 
+              (10, image.shape[0] - 80), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    
     # Draw instruction text for feedback
     cv.putText(image, "Press 'a' to approve path, 'r' to reject, '+/-' to adjust turning radius", 
               (10, image.shape[0] - 20), cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
-    # Return without control points (they're no longer used with Reed-Shepp)
+    # Return without control points (they're no longer used)
     return image, path_points, None, None
 
 
@@ -411,103 +403,152 @@ def path_length(path):
 
 def path_score(path, favor_reversing=True):
     """
-    Score a path based only on its total length.
+    Score a path based on length and complexity.
     
     Args:
         path: List of (segment_type, length) tuples
-        favor_reversing: Argument kept for compatibility, but ignored.
+        favor_reversing: Whether to slightly prefer reversing paths when appropriate
     
     Returns:
         Score value (lower is better)
     """
-    return path_length(path) # Simplest score: shorter is better
+    # Calculate total path length
+    total_length = sum(abs(seg[1]) for seg in path)
+    
+    # Count segments that are straight lines
+    straight_segments = sum(1 for seg in path if seg[0] == 'S')
+    
+    # Prefer paths with straight segments (more direct)
+    straight_bonus = -0.2 if straight_segments > 0 else 0
+    
+    # Add a small bonus for shorter paths
+    return total_length + straight_bonus
 
 
-def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_angle, turning_radius):
+def compute_reed_shepp_path(start_x, start_y, start_angle, goal_x, goal_y, goal_angle, turning_radius, rotation_offset=0):
     """
-    Compute a path using Reed-Shepp curves.
-    
-    Reed-Shepp paths are optimal paths for car-like vehicles considering forward and backward movement.
-    They consist of circular arcs (turning) and straight line segments.
-    
-    Args:
-        start_x, start_y: Starting position
-        start_angle: Starting orientation (radians)
-        goal_x, goal_y: Goal position
-        goal_angle: Goal orientation (radians)
-        turning_radius: Minimum turning radius of the vehicle
-        
-    Returns:
-        Tuple of (points, path_segments):
-            - points: List of points representing the path
-            - path_segments: List of (segment_type, length) tuples that generated the path
+    Create a realistic S-curve path specifically designed for reverse parking.
+    The second segment (reverse) approaches at a -90 degree angle to the red car.
+    Green car starts with a -90 degree angle adjustment from its orientation.
+    Includes a fixed straight segment at the beginning and multiple straight segments during reverse.
     """
-    # Normalize the problem to standard form (start at origin, goal relative to start)
+    # Calculate the distance between start and goal
     dx = goal_x - start_x
     dy = goal_y - start_y
+    distance = math.sqrt(dx*dx + dy*dy)
     
-    # Rotate the coordinate system so that start_angle = 0
-    c = math.cos(-start_angle)
-    s = math.sin(-start_angle)
-    x = c * dx - s * dy
-    y = s * dx + c * dy
+    # Calculate angles - use exact angles from cars without modifications
+    start_direction_angle = start_angle
+    goal_direction_angle = goal_angle
     
-    # Compute the normalized goal orientation
-    phi = goal_angle - start_angle
+    # Always print the angle information to the console/serial monitor
+    print("\nPath Generation Angle Information:")
+    print(f"  Green car angle: {math.degrees(start_angle):.1f}°") 
+    print(f"  Red car angle: {math.degrees(goal_angle):.1f}°")
     
-    # Scale the problem by turning radius
-    scaled_x = x / turning_radius
-    scaled_y = y / turning_radius
+    # To maintain true perpendicularity:
+    # 1. Get the car's angle in radians (including any rotation)
+    car_angle_rad = start_angle
+    if rotation_offset != 0:
+        car_angle_rad += math.radians(rotation_offset)
+        print(f"  Applied rotation offset: {rotation_offset}°")
     
-    # --- Consider only simpler Reed-Shepp path types --- 
-    # CSC (Curve-Straight-Curve) and CCC (Curve-Curve-Curve)
-    path_types = [
-        compute_csc_path(scaled_x, scaled_y, phi),  # CSC path (Curve-Straight-Curve)
-        compute_ccc_path(scaled_x, scaled_y, phi),  # CCC path (Curve-Curve-Curve)
-        # compute_ccsc_path(scaled_x, scaled_y, phi), # Ignoring complex types for now
-        # compute_cscc_path(scaled_x, scaled_y, phi), # Ignoring complex types for now
-        # compute_ccscc_path(scaled_x, scaled_y, phi) # Ignoring complex types for now
-    ]
+    # 2. Calculate perpendicular angle by adding π/2 (90 degrees)
+    # For clockwise perpendicular, subtract π/2
+    adjusted_start_angle = car_angle_rad - math.pi/2
     
-    # Create a reverse variant for each valid path type found
-    reverse_path_types = []
-    for path in [p for p in path_types if p]:
-        # Create a reverse version by negating all segment lengths
-        reverse_path = [(seg_type, -length) for seg_type, length in path]
-        reverse_path_types.append(reverse_path)
+    print(f"  Car angle after rotation: {math.degrees(car_angle_rad):.1f}°")
+    print(f"  Final path angle (perpendicular): {math.degrees(adjusted_start_angle):.1f}°")
     
-    # Combine all path options
-    all_path_types = [p for p in path_types + reverse_path_types if p]
+    # The distance to place the intermediate control points
+    intermediate_dist = min(distance * 0.4, 100)  # Reduced from 0.7 to 0.4, and max from 200 to 100
+
+    # Add a fixed distance straight segment at the start
+    fixed_start_distance = 50  # Fixed initial segment
+    start_segment_x = start_x + fixed_start_distance * math.cos(adjusted_start_angle)
+    start_segment_y = start_y + fixed_start_distance * math.sin(adjusted_start_angle)
+    print(f"  Added fixed start segment: {fixed_start_distance} pixels at {math.degrees(adjusted_start_angle):.1f}°")
     
-    # Find the shortest valid path
-    valid_paths = [p for p in all_path_types if p]
-    if not valid_paths:
-        # If no valid Reed-Shepp path found, fall back to a simple arc + line
-        points = simple_dubins_path(start_x, start_y, start_angle, goal_x, goal_y, goal_angle, turning_radius)
-        # Create a simple segment representation for the fallback path
-        segments = [('S', 1.0)]  # Simply mark it as a forward straight path
-        return points, segments
+    # Adjust the approach angle for reverse parking
+    approach_angle = goal_angle + math.radians(90)  
+    print(f"  Approach angle: {math.degrees(approach_angle):.1f}° (red car angle + 90°)")
     
-    # Choose the best path based on our scoring function rather than just length
-    best_path = min(valid_paths, key=lambda p: path_score(p, CONFIG['FAVOR_REVERSING']))
+    # Calculate position to approach from using the adjusted angle
+    if distance < 208:
+        approach_distance = min(200, distance * 0.5)  # Increased from 100 to 200, and ratio from 0.3 to 0.5
+        print(f"  Reduced approach distance: {approach_distance:.1f} (cars are close)")
+    else:
+        approach_distance = 208  # 208 pixels is the distance between the two cars in the image
     
-    # Generate points along the path
-    points = generate_points_along_path(best_path, start_x, start_y, start_angle, turning_radius)
+    # Calculate multiple reverse segments
+    num_reverse_segments = 10  # Number of reverse segments
+    reverse_segment_length = approach_distance / num_reverse_segments
     
-    # Store the exact goal coordinates to preserve them
-    exact_goal = (goal_x, goal_y)
+    # Calculate points for reverse segments
+    reverse_points = []
+    for i in range(num_reverse_segments + 1):  # +1 for the final point
+        t = i / num_reverse_segments
+        segment_x = goal_x + (approach_distance * (1 - t)) * math.cos(approach_angle)
+        segment_y = goal_y + (approach_distance * (1 - t)) * math.sin(approach_angle)
+        reverse_points.append((segment_x, segment_y))
     
-    # Apply smoothing if enabled
-    if CONFIG['PATH_SMOOTHING'] > 0:
-        points = smooth_path(points, CONFIG['PATH_SMOOTHING'])
-        
-    # Always ensure the path ends at the exact goal position
-    if points and len(points) > 1:
-        # Replace the last point with the exact goal coordinates
-        points[-1] = exact_goal
+    # Point for leaving the starting position - now starting from the end of the fixed segment
+    leaving_start_x = start_segment_x + (intermediate_dist - fixed_start_distance) * math.cos(adjusted_start_angle)
+    leaving_start_y = start_segment_y + (intermediate_dist - fixed_start_distance) * math.sin(adjusted_start_angle)
     
-    # Return both the points and the path segments
-    return points, best_path
+    # Calculate a good middle control point that creates a smooth S-curve
+    mid_x = (leaving_start_x + reverse_points[0][0]) / 2
+    mid_y = (leaving_start_y + reverse_points[0][1]) / 2
+    
+    # Add a slight offset to create a nice curve
+    perpendicular_angle = adjusted_start_angle + math.pi/2
+    curve_offset = min(distance * 0.15, 30)  # Reduced from 0.2 to 0.15, and max from 40 to 30
+    mid_x += curve_offset * math.cos(perpendicular_angle)
+    mid_y += curve_offset * math.sin(perpendicular_angle)
+    
+    # Generate points for the path
+    points = []
+    num_points = CONFIG['PATH_POINTS']
+    
+    # Add the fixed initial straight segment
+    fixed_segment_points = 10
+    for i in range(fixed_segment_points):
+        t = i / (fixed_segment_points - 1)
+        x = start_x + t * (start_segment_x - start_x)
+        y = start_y + t * (start_segment_y - start_y)
+        points.append((x, y))
+    
+    # Allocate remaining points
+    remaining_points = num_points - fixed_segment_points
+    forward_ratio = 0.25 if distance >= 10 else 0.2  # Reduced from 0.4/0.3 to 0.25/0.2
+    forward_points = int(remaining_points * forward_ratio)
+    reverse_points_count = remaining_points - forward_points
+    
+    # Add forward curve points
+    for i in range(forward_points):
+        t = i / (forward_points - 1)
+        x = (1-t)*(1-t) * start_segment_x + 2*(1-t)*t * mid_x + t*t * reverse_points[0][0]
+        y = (1-t)*(1-t) * start_segment_y + 2*(1-t)*t * mid_y + t*t * reverse_points[0][1]
+        points.append((x, y))
+    
+    # Add reverse segment points
+    points_per_segment = reverse_points_count // num_reverse_segments
+    for i in range(len(reverse_points) - 1):
+        start_pt = reverse_points[i]
+        end_pt = reverse_points[i + 1]
+        for j in range(points_per_segment):
+            t = j / points_per_segment
+            x = start_pt[0] + t * (end_pt[0] - start_pt[0])
+            y = start_pt[1] + t * (end_pt[1] - start_pt[1])
+            points.append((x, y))
+    
+    # Add final approach to goal
+    points.append((goal_x, goal_y))
+    
+    # Create segments list for compatibility
+    segments = [('S', distance)]
+    
+    return points, segments
 
 
 def smooth_path(points, smoothing_factor=0.2, iterations=5):
@@ -550,50 +591,8 @@ def smooth_path(points, smoothing_factor=0.2, iterations=5):
         
         iteration_smoothed.append(smoothed[-1]) # Keep last point fixed
         smoothed = iteration_smoothed # Update path for next iteration
-
+    
     return smoothed
-
-
-def compute_csc_path(x, y, phi):
-    """Compute CSC (Curve-Straight-Curve) paths with multiple variants."""
-    # CSC has 4 possible types: LSL, LSR, RSL, RSR
-    # We'll compute all and return the shortest valid one
-    
-    # Calculate the straight distance
-    d = math.sqrt(x*x + y*y)
-    
-    # Check if path is feasible
-    if d < 2:  # Two unit circles can't connect if centers are closer than 2 units
-        return None
-    
-    # Compute LSL path
-    lsl = compute_lsl_path(x, y, phi)
-    
-    # Compute RSR path
-    rsr = compute_rsr_path(x, y, phi)
-    
-    # Compute LSR path
-    lsr = compute_lsr_path(x, y, phi)
-    
-    # Compute RSL path
-    rsl = compute_rsl_path(x, y, phi)
-    
-    # Find the shortest valid path
-    paths = [p for p in [lsl, rsr, lsr, rsl] if p]
-    if not paths:
-        # Simplified fallback if all specific types fail
-        if abs(phi) < 0.01:  # If almost straight
-            return [('S', d)]
-        else:
-            straight_length = max(0, d - 2)  # Straight segment length
-            turn_angle = math.atan2(y, x)
-            return [
-                ('L', turn_angle),  # First turn
-                ('S', straight_length),  # Straight segment
-                ('L', phi - turn_angle)   # Final turn
-            ]
-    
-    return min(paths, key=lambda p: path_length(p))
 
 
 def compute_lsl_path(x, y, phi):
@@ -880,8 +879,8 @@ def generate_points_along_path(path_segments, start_x, start_y, start_angle, tur
 
             # Ensure angle stays within [-pi, pi] or [0, 2pi] if needed
             # theta = (theta + math.pi) % (2 * math.pi) - math.pi 
-
-            points.append((x, y))
+                
+                points.append((x, y))
             points_generated += 1
 
 
@@ -971,6 +970,33 @@ def save_path_data(green_box, red_box, path_points, is_correct, filename='path_d
     print(f"Reed-Shepp path data saved as {status} example at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
+def draw_grid(image):
+    """Draw a grid overlay on the image."""
+    if not CONFIG['SHOW_GRID']:
+        return image
+        
+    grid_image = image.copy()
+    h, w = grid_image.shape[:2]
+    grid_size = CONFIG['GRID_SIZE']
+    grid_color = CONFIG['GRID_COLOR']
+    
+    # Draw vertical lines
+    for x in range(0, w, grid_size):
+        cv.line(grid_image, (x, 0), (x, h), grid_color, 1)
+        # Add coordinates every 100 pixels
+        if x % 100 == 0:
+            cv.putText(grid_image, str(x), (x + 5, 15), cv.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    
+    # Draw horizontal lines
+    for y in range(0, h, grid_size):
+        cv.line(grid_image, (0, y), (w, y), grid_color, 1)
+        # Add coordinates every 100 pixels
+        if y % 100 == 0:
+            cv.putText(grid_image, str(y), (5, y + 15), cv.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    
+    return grid_image
+
+
 def mouse_callback(event, x, y, flags, param):
     """Handle mouse events for dragging boxes."""
     red_box, green_box, image, _, edit_control_points = param
@@ -995,8 +1021,12 @@ def mouse_callback(event, x, y, flags, param):
     # Redraw the image
     display_image = image.copy()
     
+    # Apply grid if enabled
+    if CONFIG['SHOW_GRID']:
+        display_image = draw_grid(display_image)
+    
     # Generate and draw the Reed-Shepp path
-    display_image, _, _, _ = generate_path(green_box, red_box, display_image)
+    display_image, _, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=0)
     
     # Draw boxes
     red_box.draw(display_image)
@@ -1033,6 +1063,10 @@ def process_image(image_path):
     show_path = False
     path_points = []
     
+    # Track rotation offset for the green car
+    # When the car is manually rotated, this will be set to 5, otherwise 0
+    rotation_offset = 0
+    
     # Set up window and mouse callback
     cv.namedWindow('Image Display')
     cv.setMouseCallback('Image Display', mouse_callback, 
@@ -1040,6 +1074,8 @@ def process_image(image_path):
 
     # Display the image
     display_image = image.copy()
+    if CONFIG['SHOW_GRID']:
+        display_image = draw_grid(display_image)
     red_box.draw(display_image)
     green_box.draw(display_image)
     cv.imshow('Image Display', display_image)
@@ -1053,6 +1089,7 @@ def process_image(image_path):
     print("- 'r': Reject path as incorrect")
     print("- '+'/'-': Increase/decrease turning radius")
     print("- 'd': Toggle debug visualization")
+    print("- 'g': Toggle grid display")
     print("- Space: Save box parameters to CSV")
     print("- 'q': Quit\n")
     
@@ -1071,10 +1108,14 @@ def process_image(image_path):
         # Rotate green box with 'z' and 'x' keys
         elif key == ord('z'):
             green_box.rotate(-5)
+            rotation_offset = 5  # Keep same direction as box rotation
             show_path = False
+            print("Rotating green box -5°, path adjusting to maintain perpendicularity")
         elif key == ord('x'):
             green_box.rotate(5)
+            rotation_offset = -5  # Keep same direction as box rotation
             show_path = False
+            print("Rotating green box +5°, path adjusting to maintain perpendicularity")
 
         # Save parameters to CSV when spacebar is pressed
         elif key == ord(' '):
@@ -1085,7 +1126,8 @@ def process_image(image_path):
         elif key == ord('p'):
             show_path = True
             display_image = image.copy()
-            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image)
+            # Pass the rotation_offset to the generate_path function
+            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
             red_box.draw(display_image)
             green_box.draw(display_image)
             cv.imshow('Image Display', display_image)
@@ -1110,7 +1152,7 @@ def process_image(image_path):
             print(f"Increased turning radius range: {CONFIG['MIN_TURNING_RADIUS']}-{CONFIG['MAX_TURNING_RADIUS']}")
             if show_path:
                 display_image = image.copy()
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image)
+                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
                 red_box.draw(display_image)
                 green_box.draw(display_image)
                 cv.imshow('Image Display', display_image)
@@ -1122,7 +1164,7 @@ def process_image(image_path):
             print(f"Decreased turning radius range: {CONFIG['MIN_TURNING_RADIUS']}-{CONFIG['MAX_TURNING_RADIUS']}")
             if show_path:
                 display_image = image.copy()
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image)
+                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
                 red_box.draw(display_image)
                 green_box.draw(display_image)
                 cv.imshow('Image Display', display_image)
@@ -1133,7 +1175,22 @@ def process_image(image_path):
             print(f"Debug visualization: {'ON' if CONFIG['DEBUG_VISUALIZATION'] else 'OFF'}")
             if show_path:
                 display_image = image.copy()
-                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image)
+                if CONFIG['SHOW_GRID']:
+                    display_image = draw_grid(display_image)
+                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
+                red_box.draw(display_image)
+                green_box.draw(display_image)
+                cv.imshow('Image Display', display_image)
+        
+        # Toggle grid display
+        elif key == ord('g'):
+            CONFIG['SHOW_GRID'] = not CONFIG['SHOW_GRID']
+            print(f"Grid display: {'ON' if CONFIG['SHOW_GRID'] else 'OFF'}")
+            display_image = image.copy()
+            if CONFIG['SHOW_GRID']:
+                display_image = draw_grid(display_image)
+            if show_path:
+                display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
                 red_box.draw(display_image)
                 green_box.draw(display_image)
                 cv.imshow('Image Display', display_image)
@@ -1141,7 +1198,9 @@ def process_image(image_path):
         # Update display when anything changes
         elif show_path:
             display_image = image.copy()
-            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image)
+            if CONFIG['SHOW_GRID']:
+                display_image = draw_grid(display_image)
+            display_image, path_points, _, _ = generate_path(green_box, red_box, display_image, rotation_offset=rotation_offset)
             red_box.draw(display_image)
             green_box.draw(display_image)
             cv.imshow('Image Display', display_image)
